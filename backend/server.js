@@ -79,7 +79,6 @@ const Message = mongoose.model('Message', messageSchema);
 function auth(req, res, next) {
   const userId = req.headers['x-user-id'];
   if (!userId || userId === 'null' || userId === null) {
-    console.error('❌ [AUTH ERROR] Thiếu x-user-id');
     return res.status(401).json({ message: 'Chưa đăng nhập hoặc userId không hợp lệ.' });
   }
   req.userId = userId;
@@ -101,7 +100,7 @@ async function ensureDefaultGroupsAndHLVAI() {
     { name: 'Quản trị viên', description: 'Quản trị hệ thống' },
     { upsert: true, new: true }
   );
-  const memberGroup = await Group.findOneAndUpdate(
+  await Group.findOneAndUpdate(
     { name: 'Hội viên' },
     { name: 'Hội viên', description: 'Người dùng thông thường' },
     { upsert: true, new: true }
@@ -109,26 +108,18 @@ async function ensureDefaultGroupsAndHLVAI() {
   let hlvai = await User.findOne({ username: 'hlvai' });
   if (!hlvai) {
     hlvai = new User({
-      username: 'hlvai',
-      password: 'hlvai',
-      fullname: 'HLV AI',
-      birthday: new Date('2000-01-01'),
-      height: 170,
-      gender: 'Khác',
-      group: adminGroup ? adminGroup._id : undefined
+      username: 'hlvai', password: 'hlvai', fullname: 'HLV AI', birthday: new Date('2000-01-01'),
+      height: 170, gender: 'Khác', group: adminGroup ? adminGroup._id : undefined
     });
     await hlvai.save();
     console.log('🤖 Đã tạo user HLV AI');
   }
 }
 
-// --- ROUTES ĐĂNG NHẬP / ĐĂNG KÝ ---
+// --- ROUTES AUTH ---
 
 app.post('/dangky', async (req, res) => {
     let { username, password, fullname, birthday, height, gender } = req.body;
-    if (!username || !password || !fullname || !birthday || !height || !gender) {
-        return res.status(400).json({ message: 'Vui lòng nhập đầy đủ thông tin.' });
-    }
     username = username.toLowerCase();
     try {
         const userExist = await User.findOne({ username });
@@ -141,9 +132,7 @@ app.post('/dangky', async (req, res) => {
         });
         await user.save();
         res.status(201).json({ message: 'Đăng ký thành công!' });
-    } catch (err) {
-        res.status(500).json({ message: 'Lỗi máy chủ.' });
-    }
+    } catch (err) { res.status(500).json({ message: 'Lỗi máy chủ.' }); }
 });
 
 app.post('/dangnhap', async (req, res) => {
@@ -151,16 +140,14 @@ app.post('/dangnhap', async (req, res) => {
     username = username.toLowerCase();
     try {
         const user = await User.findOne({ username }).populate('group');
-        if (!user) return res.status(400).json({ message: 'Sai thông tin.' });
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ message: 'Sai thông tin.' });
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+          return res.status(400).json({ message: 'Sai thông tin đăng nhập.' });
+        }
         res.json({
             message: 'Đăng nhập thành công!',
             user: { _id: user._id, username: user.username, fullname: user.fullname, group: user.group, gender: user.gender, height: user.height, birthday: user.birthday }
         });
-    } catch (err) {
-        res.status(500).json({ message: 'Lỗi máy chủ.' });
-    }
+    } catch (err) { res.status(500).json({ message: 'Lỗi máy chủ.' }); }
 });
 
 app.get('/adminreset', async (req, res) => {
@@ -178,75 +165,28 @@ app.get('/adminreset', async (req, res) => {
 
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, '../frontend/index.html')); });
 
-// --- ROUTES CHỈ SỐ SỨC KHỎE ---
+// --- ROUTES GEMINI AI ---
 
-app.post('/api/body-metrics', auth, async (req, res) => {
-  try {
-    const metric = new BodyMetric({ ...req.body, userId: req.userId });
-    await metric.save();
-    res.json({ message: 'Lưu chỉ số thành công!', metric });
-  } catch (err) { res.status(500).json({ message: 'Lỗi lưu chỉ số.' }); }
-});
-
-app.get('/api/body-metrics/latest-with-previous', auth, async (req, res) => {
-  try {
-    const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: -1 }).limit(2);
-    res.json({ latest: metrics[0] || null, previous: metrics[1] || null });
-  } catch (err) { res.status(500).json({ message: 'Lỗi lấy dữ liệu.' }); }
-});
-
-app.get('/api/body-metrics/all', auth, async (req, res) => {
-  try {
-    const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: 1 });
-    res.json(metrics);
-  } catch (err) { res.status(500).json({ message: 'Lỗi lấy dữ liệu.' }); }
-});
-
-// --- DEBUG & GEMINI API ROUTES ---
-
-// Route phân tích ảnh chỉ số
 app.post('/api/body-metrics/analyze-image', auth, async (req, res) => {
   try {
     const { imageBase64, fullname, gender, height, age, lastMetrics, prompt } = req.body;
-    console.log(`\n🔍 [DEBUG] Phân tích ảnh chỉ số cho: ${fullname}`);
+    console.log(`\n🔍 [DEBUG] Phân tích ảnh cho: ${fullname}`);
 
     let finalPrompt = prompt || `đây là hình ảnh ghi chỉ số sức khỏe của ${fullname}, giới tính ${gender}, chiều cao ${height} cm, tuổi ${age}. hãy phân tích chỉ số sức khỏe và chỉ trả về kết quả dưới dạng JSON, không giải thích, không markdown. Ví dụ: {"cân_nặng": 48.6, "tỉ_lệ_mỡ_cơ_thể": 29.6, "khoáng_chất": 2.1, "nước": 51.7, "cơ_bắp": 32.1, "cân_đối": null, "năng_lượng": 989, "tuổi_sinh_học": 53, "mỡ_nội_tạng": 5.5}`;
-    if (lastMetrics) finalPrompt += `\nChỉ số gần nhất: ${JSON.stringify(lastMetrics)}`;
-
     const base64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
 
-    console.log("📤 Đang gửi request tới URL:", process.env.GEMINI_API_URL);
-    console.log("🔑 API Key check:", process.env.GEMINI_API_KEY ? "Đã cấu hình" : "CHƯA CÓ KEY!");
-
     const geminiRes = await axios.post(
-      `${process.env.GEMINI_API_URL}?key=${process.env.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { text: finalPrompt },
-            { inlineData: { mimeType: "image/png", data: base64 } }
-          ]
-        }]
-      },
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: finalPrompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }] },
       { headers: { 'Content-Type': 'application/json' } }
     );
-
-    console.log("✅ Phản hồi từ Gemini thành công.");
     res.json(geminiRes.data);
-
   } catch (err) {
-    console.error("❌ [LỖI GEMINI ANALYZE-IMAGE]:");
-    if (err.response) {
-      console.error("- Status:", err.response.status);
-      console.error("- Data:", JSON.stringify(err.response.data, null, 2));
-    } else {
-      console.error("- Message:", err.message);
-    }
-    res.status(500).json({ message: 'Lỗi phân tích ảnh.', error: err.message });
+    console.error("❌ Lỗi Analyze-image:", err.response?.data || err.message);
+    res.status(500).json({ message: 'Lỗi phân tích AI.', detail: err.response?.data?.error?.message || err.message });
   }
 });
 
-// Route gửi ảnh bữa ăn & tư vấn
 app.post('/api/chat/send-meal', auth, async (req, res) => {
   try {
     const { to, imageBase64 } = req.body;
@@ -264,24 +204,15 @@ app.post('/api/chat/send-meal', auth, async (req, res) => {
 
     let geminiReply = '';
     try {
-      console.log("📤 Đang gửi ảnh bữa ăn tới Gemini...");
       const geminiRes = await axios.post(
-        `${process.env.GEMINI_API_URL}?key=${process.env.GEMINI_API_KEY}`,
-        {
-          contents: [{
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: "image/png", data: base64 } }
-            ]
-          }]
-        },
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        { contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }] },
         { headers: { 'Content-Type': 'application/json' } }
       );
       geminiReply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "Không có phản hồi.";
-      console.log("✅ Gemini tư vấn thành công.");
     } catch (err) {
-      console.error("❌ [LỖI GEMINI SEND-MEAL]:", err.response?.data || err.message);
-      geminiReply = 'Lỗi khi kết nối với trí tuệ nhân tạo.';
+      console.error("❌ Lỗi Quota/API Gemini:", err.response?.data || err.message);
+      geminiReply = 'AI đang bận (Hết hạn mức phút này), vui lòng thử lại sau 1 phút.';
     }
 
     const hlvaiUser = await User.findOne({ username: 'hlvai' });
@@ -289,23 +220,32 @@ app.post('/api/chat/send-meal', auth, async (req, res) => {
       await new Message({ from: hlvaiUser._id, to: req.userId, content: geminiReply }).save();
     }
     res.json({ message: 'Thành công', aiReply: geminiReply });
-
   } catch (err) { res.status(500).json({ message: 'Lỗi hệ thống.' }); }
 });
 
-// --- QUẢN LÝ TÀI KHOẢN & ADMIN (GIỮ NGUYÊN LOGIC CỦA BẠN) ---
+// --- CÁC ROUTE CÒN LẠI ---
+
+app.post('/api/body-metrics', auth, async (req, res) => {
+  const metric = new BodyMetric({ ...req.body, userId: req.userId });
+  await metric.save();
+  res.json({ message: 'Lưu thành công', metric });
+});
+
+app.get('/api/body-metrics/latest-with-previous', auth, async (req, res) => {
+  const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: -1 }).limit(2);
+  res.json({ latest: metrics[0] || null, previous: metrics[1] || null });
+});
+
+app.get('/api/body-metrics/all', auth, async (req, res) => {
+  const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: 1 });
+  res.json(metrics);
+});
 
 app.get('/api/account/profile', auth, async (req, res) => {
   const user = await User.findById(req.userId).select('-password');
   res.json(user);
 });
 
-app.put('/api/account/profile', auth, async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.userId, req.body, { new: true }).select('-password');
-  res.json(user);
-});
-
-// Cấu hình Multer lưu avatar
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, 'public/static/avatar/')),
   filename: (req, file, cb) => cb(null, req.userId + path.extname(file.originalname))
@@ -319,15 +259,11 @@ app.post('/api/account/avatar', auth, uploadAvatar.single('avatar'), async (req,
     const user = await User.findByIdAndUpdate(req.userId, { avatar: `data:${req.file.mimetype};base64,${base64}` }, { new: true });
     fs.unlinkSync(req.file.path);
     res.json(user);
-  } catch (err) { res.status(500).send(err); }
+  } catch (err) { res.status(500).send('Lỗi upload'); }
 });
 
-// --- CHAT LOGIC ---
-
 app.get('/api/chat/users', auth, async (req, res) => {
-  const currentUser = await User.findById(req.userId).populate('group');
   let users = await User.find().populate('group');
-  // Lọc logic theo quyền (giữ nguyên logic gốc của Hoàn)
   users = users.filter(u => u._id.toString() !== req.userId && u.fullname !== 'HLV AI');
   res.json(users.map(u => ({ _id: u._id, fullname: u.fullname, username: u.username, group: u.group?.name })));
 });
@@ -345,11 +281,9 @@ app.get('/api/chat/history/:userId', auth, async (req, res) => {
   res.json(messages);
 });
 
-// --- KHỞI ĐỘNG ---
-
 ensureDefaultGroupsAndHLVAI();
 
 const PORT = 3001;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Máy chủ đang chạy tại: http://localhost:${PORT}`);
+    console.log(`🚀 Server: http://localhost:${PORT}`);
 });
