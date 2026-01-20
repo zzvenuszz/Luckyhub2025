@@ -23,7 +23,8 @@ mongoose.connect(MONGO_URI)
   .then(() => console.log('Kết nối MongoDB thành công!'))
   .catch(err => console.log('Lỗi kết nối MongoDB:', err));
 
-// Định nghĩa schema nhóm người dùng
+// --- ĐỊNH NGHĨA SCHEMA (GIỮ NGUYÊN) ---
+
 const groupSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   description: String,
@@ -34,7 +35,6 @@ const groupSchema = new mongoose.Schema({
 });
 const Group = mongoose.model('Group', groupSchema);
 
-// Định nghĩa schema người dùng
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true },
     password: { type: String, required: true },
@@ -47,7 +47,6 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
-// Model chỉ số sức khỏe
 const bodyMetricSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   ngayKiemTra: { type: Date, required: true },
@@ -66,7 +65,6 @@ const bodyMetricSchema = new mongoose.Schema({
 });
 const BodyMetric = mongoose.model('BodyMetric', bodyMetricSchema);
 
-// Model tin nhắn giữa người dùng
 const messageSchema = new mongoose.Schema({
   from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -76,17 +74,17 @@ const messageSchema = new mongoose.Schema({
 });
 const Message = mongoose.model('Message', messageSchema);
 
-// Middleware xác thực
+// --- MIDDLEWARE ---
+
 function auth(req, res, next) {
   const userId = req.headers['x-user-id'];
   if (!userId || userId === 'null' || userId === null) {
-    return res.status(401).json({ message: 'Chưa đăng nhập hoặc userId không hợp lệ.' });
+    return res.status(401).json({ message: 'Chưa đăng nhập.' });
   }
   req.userId = userId;
   next();
 }
 
-// Middleware kiểm tra admin
 async function adminOnly(req, res, next) {
   const user = await User.findById(req.userId).populate('group');
   if (!user || !user.group || user.group.name !== 'Quản trị viên') {
@@ -96,16 +94,21 @@ async function adminOnly(req, res, next) {
 }
 
 async function ensureDefaultGroupsAndHLVAI() {
-  const adminGroup = await Group.findOneAndUpdate({ name: 'Quản trị viên' }, { name: 'Quản trị viên', description: 'Quản trị hệ thống' }, { upsert: true, new: true });
-  await Group.findOneAndUpdate({ name: 'Hội viên' }, { name: 'Hội viên', description: 'Người dùng thông thường' }, { upsert: true, new: true });
+  const adminGroup = await Group.findOneAndUpdate({ name: 'Quản trị viên' }, { description: 'Quản trị hệ thống' }, { upsert: true, new: true });
+  await Group.findOneAndUpdate({ name: 'Hội viên' }, { description: 'Người dùng thông thường' }, { upsert: true, new: true });
   let hlvai = await User.findOne({ username: 'hlvai' });
   if (!hlvai) {
-    hlvai = new User({ username: 'hlvai', password: 'hlvai', fullname: 'HLV AI', birthday: new Date('2000-01-01'), height: 170, gender: 'Khác', group: adminGroup._id });
+    hlvai = new User({
+      username: 'hlvai', password: 'hlvai', fullname: 'HLV AI',
+      birthday: new Date('2000-01-01'), height: 170, gender: 'Khác', group: adminGroup._id
+    });
     await hlvai.save();
+    console.log('Đã tạo user HLV AI');
   }
 }
 
-// Routes Auth
+// --- ROUTES AUTH & ADMIN ---
+
 app.post('/dangky', async (req, res) => {
     let { username, password, fullname, birthday, height, gender } = req.body;
     username = username.toLowerCase();
@@ -126,7 +129,7 @@ app.post('/dangnhap', async (req, res) => {
     try {
         const user = await User.findOne({ username }).populate('group');
         if (!user || !(await bcrypt.compare(password, user.password))) return res.status(400).json({ message: 'Sai thông tin.' });
-        res.json({ message: 'Đăng nhập thành công!', user: { _id: user._id, username: user.username, fullname: user.fullname, group: user.group, gender: user.gender, height: user.height, birthday: user.birthday } });
+        res.json({ user: { _id: user._id, username: user.username, fullname: user.fullname, group: user.group, gender: user.gender, height: user.height, birthday: user.birthday } });
     } catch (err) { res.status(500).json({ message: 'Lỗi máy chủ.' }); }
 });
 
@@ -135,68 +138,95 @@ app.get('/adminreset', async (req, res) => {
         const adminGroup = await Group.findOne({ name: 'Quản trị viên' });
         const hashedPassword = await bcrypt.hash('admin', 10);
         await User.findOneAndUpdate({ username: 'admin' }, { password: hashedPassword, fullname: 'Quản trị viên', birthday: new Date('1990-01-01'), height: 170, gender: 'Nam', group: adminGroup?._id }, { upsert: true });
-        res.json({ message: 'Đã reset admin (admin/admin).' });
-    } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
+        res.json({ message: 'Đã reset admin.' });
+    } catch (err) { res.status(500).send('Lỗi'); }
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../frontend/index.html')));
 
-// Body Metrics
+// --- ROUTES CHỈ SỐ SỨC KHỎE ---
+
 app.post('/api/body-metrics', auth, async (req, res) => {
   try {
     const metric = new BodyMetric({ ...req.body, userId: req.userId });
     await metric.save();
-    res.json({ message: 'Lưu thành công!', metric });
-  } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
+    res.json({ message: 'Lưu chỉ số thành công!', metric });
+  } catch (err) { res.status(500).json({ message: 'Lỗi lưu chỉ số.' }); }
 });
 
 app.get('/api/body-metrics/latest-with-previous', auth, async (req, res) => {
   try {
     const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: -1 }).limit(2);
     res.json({ latest: metrics[0] || null, previous: metrics[1] || null });
-  } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
+  } catch (err) { res.status(500).json({ message: 'Lỗi lấy dữ liệu.' }); }
 });
 
 app.get('/api/body-metrics/all', auth, async (req, res) => {
   try {
     const metrics = await BodyMetric.find({ userId: req.userId }).sort({ ngayKiemTra: 1 });
     res.json(metrics);
-  } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
+  } catch (err) { res.status(500).json({ message: 'Lỗi lấy dữ liệu.' }); }
 });
 
-// Gemini Analysis
+// --- GEMINI AI - CẬP NHẬT URL VÀ MODEL ---
+
 app.post('/api/body-metrics/analyze-image', auth, async (req, res) => {
   try {
-    const { imageBase64, fullname, gender, height, age, lastMetrics, prompt } = req.body;
-    let finalPrompt = prompt || `phân tích ảnh chỉ số cho ${fullname}, JSON only.`;
+    const { imageBase64, fullname, gender, height, age, prompt } = req.body;
+    const finalPrompt = prompt || `phân tích ảnh chỉ số cho ${fullname}, JSON only.`;
     const base64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
     
+    // Sử dụng v1beta và gemini-1.5-flash để ổn định nhất
     const geminiRes = await axios.post(
-      `${process.env.GEMINI_API_URL}?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       { contents: [{ parts: [{ text: finalPrompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }] },
       { headers: { 'Content-Type': 'application/json' } }
     );
     res.json(geminiRes.data);
   } catch (err) {
-    console.error("Lỗi Gemini:", err.response?.data || err.message);
+    console.error("Lỗi Gemini Analyze:", err.response?.data || err.message);
     res.status(500).json({ message: 'Lỗi AI.' });
   }
 });
 
-// Admin APIs
-app.get('/admin/users', auth, adminOnly, async (req, res) => { res.json(await User.find().populate('group')); });
-app.put('/admin/users/:id', auth, adminOnly, async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(user);
-});
-app.delete('/admin/users/:id', auth, adminOnly, async (req, res) => {
-  await User.findByIdAndDelete(req.params.id);
-  res.json({ message: 'Xóa thành công.' });
+app.post('/api/chat/send-meal', auth, async (req, res) => {
+  try {
+    const { to, imageBase64 } = req.body;
+    const fromUser = await User.findById(req.userId);
+    const mealMsg = new Message({ from: req.userId, to, content: '[Hình ảnh bữa ăn]', image: imageBase64 });
+    await mealMsg.save();
+
+    const latestMetric = await BodyMetric.findOne({ userId: req.userId }).sort({ ngayKiemTra: -1 });
+    let metricsText = latestMetric ? `Cân nặng: ${latestMetric.canNang}, Mỡ: ${latestMetric.tiLeMoCoThe}%` : '';
+    
+    const prompt = `đây là bữa ăn của ${fromUser.fullname} (${metricsText}). Tư vấn ngắn gọn, dễ hiểu.`;
+    const base64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
+    
+    let geminiReply = '';
+    try {
+      // URL này dùng v1beta để tránh lỗi 404 cho model flash
+      const geminiRes = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        { contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }] },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+      geminiReply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'AI bận.';
+    } catch (err) {
+      console.error("Lỗi Quota Gemini:", err.response?.data || err.message);
+      geminiReply = 'HLV AI hiện đang hết lượt tư vấn (Quota Exceeded). Hãy đợi khoảng 1 phút rồi thử lại nhé!';
+    }
+
+    const hlvaiUser = await User.findOne({ username: 'hlvai' });
+    if (hlvaiUser) {
+      await new Message({ from: hlvaiUser._id, to: req.userId, content: geminiReply }).save();
+    }
+    res.json({ message: 'Thành công', aiReply: geminiReply });
+  } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
 });
 
-// Chat & AI Tư vấn
+// --- CHAT & PROFILE (GIỮ NGUYÊN) ---
+
 app.get('/api/chat/users', auth, async (req, res) => {
-  const currentUser = await User.findById(req.userId).populate('group');
   let users = await User.find().populate('group');
   users = users.filter(u => u._id.toString() !== req.userId && u.fullname !== 'HLV AI');
   res.json(users.map(u => ({ _id: u._id, fullname: u.fullname, username: u.username, group: u.group?.name })));
@@ -215,49 +245,13 @@ app.get('/api/chat/history/:userId', auth, async (req, res) => {
   res.json(messages);
 });
 
-app.post('/api/chat/send-meal', auth, async (req, res) => {
-  try {
-    const { to, imageBase64 } = req.body;
-    const fromUser = await User.findById(req.userId);
-    const mealMsg = new Message({ from: req.userId, to, content: '[Hình ảnh bữa ăn]', image: imageBase64 });
-    await mealMsg.save();
-
-    const latestMetric = await BodyMetric.findOne({ userId: req.userId }).sort({ ngayKiemTra: -1 });
-    let metricsText = latestMetric ? `Cân nặng: ${latestMetric.canNang}, Mỡ: ${latestMetric.tiLeMoCoThe}%` : '';
-    
-    const prompt = `đây là bữa ăn của ${fromUser.fullname} (${metricsText}). Tư vấn ngắn gọn.`;
-    const base64 = imageBase64.replace(/^data:image\/[a-zA-Z]+;base64,/, "");
-    
-    let geminiReply = '';
-    try {
-      // Ép model 1.5-flash bằng cách chỉ định rõ trong URL
-      const geminiRes = await axios.post(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-        { contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }] },
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-      geminiReply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || 'AI bận.';
-    } catch (err) {
-      console.error("Lỗi Quota Gemini:", err.response?.data || err.message);
-      geminiReply = 'HLV AI hiện đang hết lượt tư vấn trong phút này. Vui lòng gửi lại ảnh sau 1 phút nhé!';
-    }
-
-    const hlvaiUser = await User.findOne({ username: 'hlvai' });
-    if (hlvaiUser) {
-      await new Message({ from: hlvaiUser._id, to: req.userId, content: geminiReply }).save();
-    }
-    res.json({ message: 'Thành công', aiReply: geminiReply });
-  } catch (err) { res.status(500).json({ message: 'Lỗi.' }); }
-});
-
-// Profile & Avatar
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, 'public/static/avatar/')),
   filename: (req, file, cb) => cb(null, req.userId + path.extname(file.originalname))
 });
 const uploadAvatar = multer({ storage: avatarStorage });
 
-app.get('/api/account/profile', auth, async (req, res) => { res.json(await User.findById(req.userId).select('-password')); });
+app.get('/api/account/profile', auth, async (req, res) => res.json(await User.findById(req.userId).select('-password')));
 app.post('/api/account/avatar', auth, uploadAvatar.single('avatar'), async (req, res) => {
   const fs = require('fs');
   const base64 = fs.readFileSync(req.file.path, { encoding: 'base64' });
